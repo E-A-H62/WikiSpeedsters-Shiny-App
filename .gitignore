@@ -27,3 +27,5 @@ data/*.tmp
 # Uncomment to ignore all data and only keep samples:
 # data/*
 # !data/sample-*.*
+data/articles.tsv
+data/links.tsv
