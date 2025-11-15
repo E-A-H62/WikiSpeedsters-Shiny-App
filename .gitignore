@@ -21,3 +21,11 @@ Thumbs.db
 # Jupyter (if you add notebooks later)
 .ipynb_checkpoints/
 
+# Data (keep sample data; ignore big/private by default)
+data/*.log
+data/*.tmp
+# Uncomment to ignore all data and only keep samples:
+# data/*
+# !data/sample-*.*
+data/articles.tsv
+data/links.tsv
