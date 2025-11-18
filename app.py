@@ -273,25 +273,21 @@ def server(input: Inputs, output: Outputs, session: Session):
         lnk = None
         source = "sample"
 
-        # Check for user uploads first
+        # Check for user uploads first - use same parsing logic as _read_table
         if input.articles_file():
             fa = Path(input.articles_file()[0]['datapath'])
-            # Determine separator based on file extension
-            sep_a = "\t" if fa.suffix.lower() == ".tsv" else ","
-            art = pd.read_csv(fa, sep=sep_a)
-            art.columns = art.columns.str.strip()
-            source = "uploaded articles"
+            art = _read_table(fa)  # Use our robust parser
+            if art is not None:
+                source = "uploaded articles"
 
         if input.links_file():
             fl = Path(input.links_file()[0]['datapath'])
-            # Determine separator based on file extension
-            sep_l = "\t" if fl.suffix.lower() == ".tsv" else ","
-            lnk = pd.read_csv(fl, sep=sep_l)
-            lnk.columns = lnk.columns.str.strip()
-            if source == "sample":
-                source = "uploaded links"
-            elif source == "uploaded articles":
-                source = "uploaded"
+            lnk = _read_table(fl)  # Use our robust parser
+            if lnk is not None:
+                if source == "sample":
+                    source = "uploaded links"
+                elif source == "uploaded articles":
+                    source = "uploaded"
 
         # If no uploads, try local TSV files
         if art is None:
@@ -333,9 +329,16 @@ def server(input: Inputs, output: Outputs, session: Session):
         G = build_graph(art, lnk, input.directed())
 
         # Apply filtering strategy based on user selection
-        filter_method = input.node_filter()
-        max_nodes = int(input.max_nodes())
-        min_deg = int(input.min_degree())
+        # Safely get input values with fallbacks for initialization
+        try:
+            filter_method = input.node_filter()
+            max_nodes = int(input.max_nodes())
+            min_deg = int(input.min_degree())
+        except (TypeError, ValueError):
+            # If inputs aren't ready, use defaults
+            filter_method = "top_degree"
+            max_nodes = 200
+            min_deg = 5
 
         if G.number_of_nodes() == 0:
             return G, pd.DataFrame(
@@ -465,10 +468,5 @@ def server(input: Inputs, output: Outputs, session: Session):
         return f"Nodes: {G.number_of_nodes()} | Edges: {G.number_of_edges()} | Density: {dens:.4f} | Connected components: {comps}"
 
 
-if __name__ == "__main__":
-    import shiny
-
-    # Create and run the Shiny app
-    app = App(app_ui, server)
-
-    shiny.run_app(app, port=8000, reload=False)  # reload=False avoids any reload quirks
+# Create and run the Shiny app
+app = App(app_ui, server)
