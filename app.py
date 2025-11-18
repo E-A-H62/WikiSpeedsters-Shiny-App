@@ -469,4 +469,11 @@ def server(input: Inputs, output: Outputs, session: Session):
 
 
 # Create and run the Shiny app
-app = App(app_ui, server)
+#app = App(app_ui, server)
+if __name__ == "__main__":
+    import shiny
+
+    # Create and run the Shiny app
+    app = App(app_ui, server)
+
+    shiny.run_app(app, port=8000, reload=False)  # reload=False avoids any reload quirks
