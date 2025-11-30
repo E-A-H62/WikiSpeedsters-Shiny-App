@@ -306,6 +306,11 @@ app_ui = ui.page_fluid(
                                       ["community", "degree", "degree_centrality", "betweenness", "closeness",
                                        "clustering", "diffusion_time"]),
                       ui.input_select("size_by", "Node size by",
+                                      ["degree", "degree_centrality", "betweenness", "closeness", "clustering"]),
+
+                      ui.input_select("degree_type", "Histogram degree type",
+                                     { "total": "Total degree", "in": "In-degree", "out": "Out-degree", },
+                                      selected="total", ),
                                       ["degree", "degree_centrality", "betweenness", "closeness", "clustering"])
                   ),
 
@@ -332,12 +337,12 @@ app_ui = ui.page_fluid(
         # Main content area with visualization and table
         ui.column(
             9,
+            # First row: Graph and Table side by side
             ui.layout_column_wrap(
                 # Interactive Plotly graph with zoom/pan capabilities
                 ui.card(
                     ui.card_header("Graph View (Plotly)"),
                     output_widget("graph_plot", height="520px"),
-
                     ui.div(
                         {"class": "text-muted small mt-2"},
                         ui.output_text("graph_caption")
@@ -352,11 +357,21 @@ app_ui = ui.page_fluid(
                 ui.card(
                     ui.card_header("Top Nodes by Metric"),
                     ui.output_data_frame("metric_table")
-                )
-            )
-        )
-    ),
+                ),
+            ),
 
+            # Second row: Histogram spans full width below
+            ui.card(
+                ui.card_header("Degree Distribution Histogram"),
+                ui.div(
+                    {"class": "text-muted small mb-1"},
+                    "How to use: Shows the degree distribution for all nodes in the current graph. "
+                    "Use the 'Histogram degree type' dropdown on the left to switch "
+                    "between total degree, in-degree, or out-degree."
+                ),
+                output_widget("degree_histogram", height="350px"),
+            ),
+    ),
     # Bottom section with summary statistics
     ui.row(
         ui.column(12,
@@ -782,7 +797,65 @@ def server(input: Inputs, output: Outputs, session: Session):
         )
         return fig
 
+    @output
+    @render_widget
+    def degree_histogram():
+        """
+        Each bar shows how many nodes have a given degree.
+        Use the 'Histogram degree type' control on the left
+        to switch between total, in-, and out-degree.
+        """
+        art, lnk, _ = data_frames()
+        G_full = build_graph(art, lnk, input.directed())
 
+        # no graph = show an empty frame
+        if G_full.number_of_nodes() == 0:
+            fig = go.Figure()
+            fig.update_layout(
+                title="No nodes to display",
+                xaxis_title="Degree",
+                yaxis_title="Count of Nodes",
+            )
+            return fig
+
+        # "total", "in", or "out", which?
+        degree_mode = input.degree_type()
+
+        # compute degrees for each node
+        if G_full.is_directed():
+            if degree_mode == "in":
+                degree_dict = dict(G_full.in_degree())
+            elif degree_mode == "out":
+                degree_dict = dict(G_full.out_degree())
+            else:
+                # "total" degree = in-degree + out-degree
+                degree_dict = {
+                    n: G_full.in_degree(n) + G_full.out_degree(n)
+                    for n in G_full.nodes()
+                }
+        else:
+            degree_dict = dict(G_full.degree())
+
+        df = pd.DataFrame({"degree": list(degree_dict.values())})
+
+        mode_label = {
+            "total": "Total degree",
+            "in": "In-degree",
+            "out": "Out-degree",
+        }.get(degree_mode, "Degree")
+
+        # Plot histogram
+        fig = px.histogram(df, x="degree", nbins=40)
+
+        fig.update_layout(
+            title=f"{mode_label} distribution",
+            xaxis_title="Degree (k)",
+            yaxis_title="Count of Nodes",
+            bargap=0.1,
+            margin=dict(l=40, r=10, t=40, b=40),
+        )
+
+        return fig
 
     @output
     @render.data_frame
