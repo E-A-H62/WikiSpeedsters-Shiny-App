@@ -303,18 +303,17 @@ app_ui = ui.page_fluid(
                       ui.input_select("layout_algo", "Layout",
                                       ["spring", "kamada-kawai", "circular", "spectral"]),
                       ui.input_select("color_by", "Color by",
-                                      ["community", "degree", "degree_centrality", "betweenness", "closeness",
+                                      ["degree", "degree_centrality", "betweenness", "closeness",
                                        "clustering", "diffusion_time"]),
                       ui.input_select("size_by", "Node size by",
                                       ["degree", "degree_centrality", "betweenness", "closeness", "clustering"]),
 
                       ui.input_select("degree_type", "Histogram degree type",
-                                     { "total": "Total degree", "in": "In-degree", "out": "Out-degree", },
-                                      selected="total", ),
-                                      ["degree", "degree_centrality", "betweenness", "closeness", "clustering"])
+                                      {"total": "Total degree", "in": "In-degree", "out": "Out-degree"},
+                                      selected="total")
                   ),
 
-                  # NEW: Graph Density Controls
+                  # Graph Density Controls
                   ui.card(
                       ui.card_header("Graph Density Controls"),
                       ui.input_slider("edge_sample_pct", "Show % of edges", 10, 100, 100, step=5),
@@ -324,54 +323,60 @@ app_ui = ui.page_fluid(
                              "Reduce edge density or filter to specific communities for clarity.")
                   ),
 
-                  # NEW: Diffusion Parameters
+                  # Diffusion Parameters
                   ui.card(
                       ui.card_header("Diffusion"),
                       ui.input_select("seed_node", "Seed node", choices=[]),
                       ui.input_slider("diffusion_steps", "Diffusion steps", 1, 20, 5, step=1),
                       ui.input_switch("random_seed", "Random seed", value=False),
                       ui.input_action_button("run_diffusion", "Run diffusion", class_="btn-primary"),
-                      ui.output_text("diffusion_warning")
+                      ui.div(
+                          {"class": "text-muted small mt-1"},
+                          "To visualize diffusion, first set 'Color by' to 'diffusion_time', "
+                          "then choose a seed node and click 'Run diffusion'."
+                      ),
+                      ui.output_text("diffusion_warning"),
                   )
                   ),
+
         # Main content area with visualization and table
-        ui.column(
-            9,
-            # First row: Graph and Table side by side
-            ui.layout_column_wrap(
-                # Interactive Plotly graph with zoom/pan capabilities
-                ui.card(
-                    ui.card_header("Graph View (Plotly)"),
-                    output_widget("graph_plot", height="520px"),
-                    ui.div(
-                        {"class": "text-muted small mt-2"},
-                        ui.output_text("graph_caption")
-                    ),
+        ui.column(9,
+                  # First row: Graph and Table side by side
+                  ui.layout_column_wrap(
+                      # Interactive Plotly graph with zoom/pan capabilities
+                      ui.card(
+                          ui.card_header("Graph View (Plotly)"),
+                          output_widget("graph_plot", height="520px"),
+                          ui.div(
+                              {"class": "text-muted small mt-2"},
+                              ui.output_text("graph_caption")
+                          ),
+                          ui.div(
+                              {"class": "text-muted small mt-1"},
+                              ui.output_text("text_legend")
+                          )
+                      ),
+                      # Dynamic table showing top nodes by selected metric
+                      ui.card(
+                          ui.card_header("Top Nodes by Metric"),
+                          ui.output_data_frame("metric_table")
+                      ),
+                  ),
 
-                    ui.div(
-                        {"class": "text-muted small mt-1"},
-                        ui.output_text("text_legend")
-                    )
-                ),
-                # Dynamic table showing top nodes by selected metric
-                ui.card(
-                    ui.card_header("Top Nodes by Metric"),
-                    ui.output_data_frame("metric_table")
-                ),
-            ),
-
-            # Second row: Histogram spans full width below
-            ui.card(
-                ui.card_header("Degree Distribution Histogram"),
-                ui.div(
-                    {"class": "text-muted small mb-1"},
-                    "How to use: Shows the degree distribution for all nodes in the current graph. "
-                    "Use the 'Histogram degree type' dropdown on the left to switch "
-                    "between total degree, in-degree, or out-degree."
-                ),
-                output_widget("degree_histogram", height="350px"),
-            ),
+                  # Second row: Histogram spans full width below
+                  ui.card(
+                      ui.card_header("Degree Distribution Histogram"),
+                      ui.div(
+                          {"class": "text-muted small mb-1"},
+                          "How to use: Shows the degree distribution for all nodes in the current graph. "
+                          "Use the 'Histogram degree type' dropdown on the left to switch "
+                          "between total degree, in-degree, or out-degree."
+                      ),
+                      output_widget("degree_histogram", height="350px"),
+                  ),
+                  )
     ),
+
     # Bottom section with summary statistics
     ui.row(
         ui.column(12,
@@ -639,7 +644,7 @@ def server(input: Inputs, output: Outputs, session: Session):
         )
 
         if color_by == "diffusion_time":
-            legend_text += " (bright orange = source article, darker blue = fewer steps away)"
+            legend_text += " (green = source article, yellow = farthest infected, purple = infected earliest)"
 
         legend_text += f"\n• Node size: {size_label}\n• Edge {arrow}: link between pages"
 
@@ -745,7 +750,7 @@ def server(input: Inputs, output: Outputs, session: Session):
                     mode="markers",
                     marker=dict(
                         size=[s * 1.3 for s in source_sizes],  # Make slightly larger
-                        color="rgb(255, 69, 0)",  # Bright orange-red
+                        color="rgb(0, 255, 0)",  # Bright Green
                         line=dict(width=2, color="white")  # White border for extra emphasis
                     ),
                     text=source_nodes["node"],
