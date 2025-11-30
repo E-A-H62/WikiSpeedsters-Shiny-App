@@ -440,19 +440,11 @@ def server(input: Inputs, output: Outputs, session: Session):
             hover_name="node",
             hover_data=["degree", "degree_centrality", "betweenness", "closeness", "clustering", "community"],
             color=color_by, size=sizes,
-            custom_data=["community"]  
         ).data[0]
 
         node_trace.name = "Nodes"        
         node_trace.showlegend = True  
 
-        # Hover text pages titles + community
-        node_trace.update(
-            hovertemplate=(
-                "Page: %{hovertext}<br>"
-                "Community: %{customdata[0]}<extra></extra>"
-            )
-        )
 
         # Combine edges and nodes into final figure
         fig = go.Figure(data=[edge_trace, node_trace])
@@ -511,7 +503,8 @@ def server(input: Inputs, output: Outputs, session: Session):
         return (
             "How to read this view: Each node represents a page in the "
             f"{directed} graph. Color shows {color_by}, size reflects {size_by}, "
-            f"and edges represent links."
+            f"and edges represent links. Hover over nodes for details." 
+            
         )
 
 
