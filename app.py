@@ -230,21 +230,28 @@ app_ui = ui.page_fluid(
                   )
                   ),
         # Main content area with visualization and table
-        ui.column(9,
-                  ui.layout_column_wrap(
-                      # Interactive Plotly graph with zoom/pan capabilities
-                      ui.card(
-                          ui.card_header("Graph View (Plotly)"),
-                          output_widget("graph_plot", height="520px")
-                      ),
-                      # Dynamic table showing top nodes by selected metric
-                      ui.card(
-                          ui.card_header("Top Nodes by Metric"),
-                          ui.output_data_frame("metric_table")
-                      )
-                  )
-                  )
+        ui.column(
+            9,
+            ui.layout_column_wrap(
+                # Interactive Plotly graph with zoom/pan capabilities
+                ui.card(
+                    ui.card_header("Graph View (Plotly)"),
+                    output_widget("graph_plot", height="520px"),
+
+                    ui.div(
+                        {"class": "text-muted small mt-2"},
+                        ui.output_text("graph_caption")
+                    )
+                ),
+                # Dynamic table showing top nodes by selected metric
+                ui.card(
+                    ui.card_header("Top Nodes by Metric"),
+                    ui.output_data_frame("metric_table")
+                )
+            )
+        )
     ),
+            
     # Bottom section with summary statistics
     ui.row(
         ui.column(12,
@@ -409,10 +416,12 @@ def server(input: Inputs, output: Outputs, session: Session):
             edge_y += [ya, yb, None]
         edge_trace = go.Scatter(
             x=edge_x, y=edge_y, mode="lines",
-            hoverinfo="none", line=dict(width=1), opacity=0.5
+            hoverinfo="none", line=dict(width=1), opacity=0.5,
+            name="Edges",          
+            showlegend=True 
         )
 
-        # Add position coordinates to metrics dataframe
+        # Add position coordinates to "metrics dataframe
         m2 = metrics.copy()
         m2["x"] = m2["node"].map(lambda n: pos[n][0])
         m2["y"] = m2["node"].map(lambda n: pos[n][1])
@@ -430,16 +439,40 @@ def server(input: Inputs, output: Outputs, session: Session):
             m2, x="x", y="y",
             hover_name="node",
             hover_data=["degree", "degree_centrality", "betweenness", "closeness", "clustering", "community"],
-            color=color_by, size=sizes
+            color=color_by, size=sizes,
+            custom_data=["community"]  
         ).data[0]
+
+        node_trace.name = "Nodes"        
+        node_trace.showlegend = True  
+
+        # Hover text pages titles + community
+        node_trace.update(
+            hovertemplate=(
+                "Page: %{hovertext}<br>"
+                "Community: %{customdata[0]}<extra></extra>"
+            )
+        )
 
         # Combine edges and nodes into final figure
         fig = go.Figure(data=[edge_trace, node_trace])
         fig.update_layout(
             xaxis=dict(visible=False), yaxis=dict(visible=False),
-            showlegend=True, margin=dict(l=10, r=10, t=10, b=10),
-            dragmode="pan"  # Enable panning by default
-        )
+            showlegend=True,
+
+        legend=dict(                 
+            orientation="h",         
+            yanchor="top",
+            y=-0.1,                  
+            xanchor="center",
+            x=0.5,
+            itemclick=False,        
+            itemdoubleclick=False    
+        ),
+
+        margin=dict(l=10, r=10, t=10, b=60),  
+        dragmode="pan"
+    )
         return fig
 
     @output
@@ -466,6 +499,20 @@ def server(input: Inputs, output: Outputs, session: Session):
         dens = nx.density(GU)  # How connected the graph is (0-1)
         comps = nx.number_connected_components(GU)  # Number of disconnected groups
         return f"Nodes: {G.number_of_nodes()} | Edges: {G.number_of_edges()} | Density: {dens:.4f} | Connected components: {comps}"
+   
+    @output
+    @render.text
+    def graph_caption():
+        """Short explanation of how to read the current visualization."""
+        color_by = input.color_by()
+        size_by = input.size_by()
+        directed = "directed" if input.directed() else "undirected"
+
+        return (
+            "How to read this view: Each node represents a page in the "
+            f"{directed} graph. Color shows {color_by}, size reflects {size_by}, "
+            f"and edges represent links."
+        )
 
 
 # Create and run the Shiny app
