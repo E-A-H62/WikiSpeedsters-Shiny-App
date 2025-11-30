@@ -6,6 +6,7 @@ import networkx as nx
 import plotly.express as px
 import plotly.graph_objects as go
 from pathlib import Path
+import random
 
 # ---------- Data Loading Helpers ----------
 
@@ -170,6 +171,85 @@ def detect_communities(G: nx.Graph):
     return cmap
 
 
+def compute_modularity(G: nx.Graph, communities_dict: dict):
+    """
+    Compute modularity Q for the given graph and community assignment.
+    Returns modularity score (float).
+    """
+    if G.number_of_nodes() == 0 or not communities_dict:
+        return 0.0
+
+    GU = G.to_undirected()
+
+    # Convert dict to list of sets (format required by nx.modularity)
+    comm_ids = set(communities_dict.values())
+    communities = [set([n for n, c in communities_dict.items() if c == cid]) for cid in comm_ids]
+
+    return nx.algorithms.community.modularity(GU, communities)
+
+
+def run_si_diffusion(G: nx.Graph, seed_node: str, max_steps: int):
+    """
+    Run SI (Susceptible-Infected) diffusion model.
+
+    Args:
+        G: NetworkX graph
+        seed_node: Starting infected node
+        max_steps: Maximum number of diffusion steps
+
+    Returns:
+        dict: {node: infection_time}, where uninfected nodes have time = -1
+    """
+    if seed_node not in G.nodes():
+        return {n: -1 for n in G.nodes()}
+
+    # Use undirected version for diffusion
+    GU = G.to_undirected()
+
+    # Track infection times
+    infection_time = {n: -1 for n in GU.nodes()}
+    infection_time[seed_node] = 0
+
+    # Track newly infected nodes at each step
+    newly_infected = {seed_node}
+
+    for step in range(1, max_steps + 1):
+        # Find all neighbors of newly infected nodes
+        next_infected = set()
+        for node in newly_infected:
+            for neighbor in GU.neighbors(node):
+                if infection_time[neighbor] == -1:  # Not yet infected
+                    infection_time[neighbor] = step
+                    next_infected.add(neighbor)
+
+        # If no new infections, stop early
+        if not next_infected:
+            break
+
+        newly_infected = next_infected
+
+    return infection_time
+
+
+def check_reachability(G: nx.Graph, seed_node: str):
+    """
+    Check if all nodes are reachable from the seed node.
+
+    Returns:
+        (bool, int): (all_reachable, num_unreachable)
+    """
+    if seed_node not in G.nodes():
+        return False, G.number_of_nodes()
+
+    GU = G.to_undirected()
+
+    # Find all nodes reachable from seed
+    reachable = nx.node_connected_component(GU, seed_node)
+    num_unreachable = G.number_of_nodes() - len(reachable)
+
+    return num_unreachable == 0, num_unreachable
+
+
 def layout_coords(G: nx.Graph, algo: str):
     """
     Calculate node positions for visualization using different layout algorithms.
@@ -224,9 +304,29 @@ app_ui = ui.page_fluid(
                                       ["spring", "kamada-kawai", "circular", "spectral"]),
                       ui.input_select("color_by", "Color by",
                                       ["community", "degree", "degree_centrality", "betweenness", "closeness",
-                                       "clustering"]),
+                                       "clustering", "diffusion_time"]),
                       ui.input_select("size_by", "Node size by",
                                       ["degree", "degree_centrality", "betweenness", "closeness", "clustering"])
+                  ),
+
+                  # NEW: Graph Density Controls
+                  ui.card(
+                      ui.card_header("Graph Density Controls"),
+                      ui.input_slider("edge_sample_pct", "Show % of edges", 10, 100, 100, step=5),
+                      ui.input_select("community_filter", "Filter by community",
+                                      choices={"all": "All communities"}),
+                      ui.div({"class": "text-muted small"},
+                             "Reduce edge density or filter to specific communities for clarity.")
+                  ),
+
+                  # NEW: Diffusion Parameters
+                  ui.card(
+                      ui.card_header("Diffusion"),
+                      ui.input_select("seed_node", "Seed node", choices=[]),
+                      ui.input_slider("diffusion_steps", "Diffusion steps", 1, 20, 5, step=1),
+                      ui.input_switch("random_seed", "Random seed", value=False),
+                      ui.input_action_button("run_diffusion", "Run diffusion", class_="btn-primary"),
+                      ui.output_text("diffusion_warning")
                   )
                   ),
         # Main content area with visualization and table
@@ -241,6 +341,11 @@ app_ui = ui.page_fluid(
                     ui.div(
                         {"class": "text-muted small mt-2"},
                         ui.output_text("graph_caption")
+                    ),
+
+                    ui.div(
+                        {"class": "text-muted small mt-1"},
+                        ui.output_text("text_legend")
                     )
                 ),
                 # Dynamic table showing top nodes by selected metric
@@ -251,7 +356,7 @@ app_ui = ui.page_fluid(
             )
         )
     ),
-            
+
     # Bottom section with summary statistics
     ui.row(
         ui.column(12,
@@ -268,6 +373,9 @@ app_ui = ui.page_fluid(
 # ---------- Server Logic ----------
 
 def server(input: Inputs, output: Outputs, session: Session):
+    # Reactive value to store diffusion results
+    diffusion_results = reactive.Value({})
+
     @reactive.Calc
     def data_frames():
         """
@@ -333,53 +441,128 @@ def server(input: Inputs, output: Outputs, session: Session):
         Applies user-selected filters to reduce graph size for performance.
         """
         art, lnk, _ = data_frames()
-        G = build_graph(art, lnk, input.directed())
+        G_full = build_graph(art, lnk, input.directed())
 
         # Apply filtering strategy based on user selection
-        # Safely get input values with fallbacks for initialization
         try:
             filter_method = input.node_filter()
             max_nodes = int(input.max_nodes())
             min_deg = int(input.min_degree())
+            edge_sample = int(input.edge_sample_pct())
+            community_filt = input.community_filter()
         except (TypeError, ValueError):
-            # If inputs aren't ready, use defaults
             filter_method = "top_degree"
             max_nodes = 200
             min_deg = 5
+            edge_sample = 100
+            community_filt = "all"
 
-        if G.number_of_nodes() == 0:
-            return G, pd.DataFrame(
-                columns=["node", "degree", "degree_centrality", "betweenness", "closeness", "clustering", "community"])
+        if G_full.number_of_nodes() == 0:
+            return G_full, pd.DataFrame(
+                columns=["node", "degree", "degree_centrality", "betweenness", "closeness", "clustering",
+                         "community"]), {}
 
+        # STEP 1: Detect communities on the FULL graph (before any filtering)
+        # This ensures we have complete community info for the dropdown
+        communities_dict_full = detect_communities(G_full)
+
+        # STEP 2: Apply community filter FIRST (if selected)
+        G = G_full
+        if community_filt != "all":
+            try:
+                target_comm = int(community_filt)
+                keep_nodes = [n for n, c in communities_dict_full.items() if c == target_comm]
+                if keep_nodes:
+                    G = G.subgraph(keep_nodes).copy()
+            except ValueError:
+                pass
+
+        # STEP 3: Apply node count filtering
         if filter_method == "min_degree":
-            # Filter by minimum degree threshold, then limit to max_nodes
             if min_deg > 0:
                 keep = [n for n, d in G.degree() if d >= min_deg]
                 G = G.subgraph(keep).copy()
-                # Further limit if still too many nodes
                 if G.number_of_nodes() > max_nodes:
                     degrees = dict(G.degree())
                     top_nodes = sorted(degrees.items(), key=lambda x: x[1], reverse=True)[:max_nodes]
                     G = G.subgraph([n for n, _ in top_nodes]).copy()
 
         elif filter_method == "top_degree":
-            # Keep only the top N most connected nodes (fastest method)
             degrees = dict(G.degree())
             top_nodes = sorted(degrees.items(), key=lambda x: x[1], reverse=True)[:max_nodes]
             G = G.subgraph([n for n, _ in top_nodes]).copy()
 
         elif filter_method == "top_betweenness":
-            # Keep top N nodes by betweenness centrality (identifies bridge nodes)
             GU = G.to_undirected()
             btw = nx.betweenness_centrality(GU, normalized=True)
             top_nodes = sorted(btw.items(), key=lambda x: x[1], reverse=True)[:max_nodes]
             G = G.subgraph([n for n, _ in top_nodes]).copy()
 
-        # Compute metrics and detect communities
+        # STEP 4: Detect communities on the FILTERED graph for display
+        communities_dict = detect_communities(G)
+
+        # Compute metrics
         metrics = compute_metrics(G)
+
         if len(metrics) > 0:
-            metrics["community"] = [detect_communities(G).get(n, -1) for n in metrics["node"]]
-        return G, metrics
+            metrics["community"] = [communities_dict.get(n, -1) for n in metrics["node"]]
+
+        # STEP 5: Edge sampling
+        if edge_sample < 100 and G.number_of_edges() > 0:
+            num_edges_keep = max(1, int(G.number_of_edges() * edge_sample / 100))
+            edges_list = list(G.edges())
+            random.seed(42)
+            sampled_edges = random.sample(edges_list, num_edges_keep)
+            G_new = nx.DiGraph() if input.directed() else nx.Graph()
+            G_new.add_nodes_from(G.nodes())
+            G_new.add_edges_from(sampled_edges)
+            G = G_new
+
+        # Return communities from FULL graph so dropdown stays populated
+        return G, metrics, communities_dict_full
+
+    # Update seed node dropdown and community filter when graph changes
+    @reactive.Effect
+    def _():
+        G, metrics, communities_dict_full = graph_and_metrics()
+
+        # Update seed node choices
+        if G.number_of_nodes() > 0:
+            node_list = sorted(G.nodes())
+            choices = {n: n for n in node_list}
+            ui.update_select("seed_node", choices=choices)
+
+        # Update community filter choices based on FULL graph communities
+        # This keeps all communities available even when filtering
+        if communities_dict_full:
+            communities = sorted(set(communities_dict_full.values()))
+            comm_choices = {"all": "All communities"}
+            comm_choices.update({str(c): f"Community {c}" for c in communities})
+
+            # Only update if choices have changed (prevents reset loop)
+            current_choice = input.community_filter()
+            ui.update_select("community_filter", choices=comm_choices, selected=current_choice)
+
+    # Run diffusion when button is clicked
+    @reactive.Effect
+    @reactive.event(input.run_diffusion)
+    def _():
+        G, _, _ = graph_and_metrics()
+
+        if G.number_of_nodes() == 0:
+            return
+
+        # Determine seed node
+        if input.random_seed():
+            seed = random.choice(list(G.nodes()))
+        else:
+            seed = input.seed_node()
+            if not seed or seed not in G.nodes():
+                seed = list(G.nodes())[0]
+
+        # Run diffusion
+        infection_times = run_si_diffusion(G, seed, input.diffusion_steps())
+        diffusion_results.set(infection_times)
 
     @output
     @render.text
@@ -389,109 +572,25 @@ def server(input: Inputs, output: Outputs, session: Session):
         return f"Data source: {source}"
 
     @output
-    @render_widget
-    def graph_plot():
-        """
-        Create interactive Plotly graph visualization with:
-        - Zoom and pan capabilities
-        - Color coding by selected metric or community
-        - Node sizing by selected metric
-        - Hover tooltips showing node details
-        """
-        G, metrics = graph_and_metrics()
-        if G.number_of_nodes() == 0:
-            fig = go.Figure()
-            fig.update_layout(title="No nodes to display")
-            return fig
-
-        # Calculate node positions using selected layout algorithm
-        pos = layout_coords(G, input.layout_algo())
-
-        # Create edge traces (lines connecting nodes)
-        edge_x, edge_y = [], []
-        for a, b in G.edges():
-            xa, ya = pos[a]
-            xb, yb = pos[b]
-            edge_x += [xa, xb, None]  # None creates a break in the line
-            edge_y += [ya, yb, None]
-        edge_trace = go.Scatter(
-            x=edge_x, y=edge_y, mode="lines",
-            hoverinfo="none", line=dict(width=1), opacity=0.5,
-            name="Edges",          
-            showlegend=True 
-        )
-
-        # Add position coordinates to "metrics dataframe
-        m2 = metrics.copy()
-        m2["x"] = m2["node"].map(lambda n: pos[n][0])
-        m2["y"] = m2["node"].map(lambda n: pos[n][1])
-
-        # Apply user-selected color and size mappings
-        color_by = input.color_by()
-        size_by = input.size_by()
-        svals = m2[size_by]
-        # Scale node sizes between 10 and 40 based on metric values
-        sizes = [20] * len(svals) if svals.max() == svals.min() else \
-            (10 + 30 * (svals - svals.min()) / (svals.max() - svals.min()))
-
-        # Create node trace with hover information
-        node_trace = px.scatter(
-            m2, x="x", y="y",
-            hover_name="node",
-            hover_data=["degree", "degree_centrality", "betweenness", "closeness", "clustering", "community"],
-            color=color_by, size=sizes,
-        ).data[0]
-
-        node_trace.name = "Nodes"        
-        node_trace.showlegend = True  
-
-
-        # Combine edges and nodes into final figure
-        fig = go.Figure(data=[edge_trace, node_trace])
-        fig.update_layout(
-            xaxis=dict(visible=False), yaxis=dict(visible=False),
-            showlegend=True,
-
-        legend=dict(                 
-            orientation="h",         
-            yanchor="top",
-            y=-0.1,                  
-            xanchor="center",
-            x=0.5,
-            itemclick=False,        
-            itemdoubleclick=False    
-        ),
-
-        margin=dict(l=10, r=10, t=10, b=60),  
-        dragmode="pan"
-    )
-        return fig
-
-    @output
-    @render.data_frame
-    def metric_table():
-        """
-        Display dynamic table of top 15 nodes ranked by the selected size metric.
-        Updates automatically when user changes the "Node size by" dropdown.
-        """
-        _, metrics = graph_and_metrics()
-        if len(metrics) == 0:
-            return pd.DataFrame()
-        col = input.size_by()
-        return metrics.sort_values(col, ascending=False).head(15).reset_index(drop=True)
-
-    @output
     @render.text
-    def stats_text():
-        """Display summary statistics about the current graph."""
-        G, _ = graph_and_metrics()
+    def diffusion_warning():
+        """Display warning if seed node cannot reach all nodes."""
+        G, _, _ = graph_and_metrics()
+
         if G.number_of_nodes() == 0:
-            return "No graph loaded."
-        GU = G.to_undirected()
-        dens = nx.density(GU)  # How connected the graph is (0-1)
-        comps = nx.number_connected_components(GU)  # Number of disconnected groups
-        return f"Nodes: {G.number_of_nodes()} | Edges: {G.number_of_edges()} | Density: {dens:.4f} | Connected components: {comps}"
-   
+            return ""
+
+        seed = input.seed_node()
+        if not seed or seed not in G.nodes():
+            return ""
+
+        all_reachable, num_unreachable = check_reachability(G, seed)
+
+        if not all_reachable:
+            return f"⚠️ Warning: {num_unreachable} nodes cannot be reached from '{seed}' due to disconnected components."
+
+        return ""
+
     @output
     @render.text
     def graph_caption():
@@ -503,13 +602,225 @@ def server(input: Inputs, output: Outputs, session: Session):
         return (
             "How to read this view: Each node represents a page in the "
             f"{directed} graph. Color shows {color_by}, size reflects {size_by}, "
-            f"and edges represent links. Hover over nodes for details." 
-            
+            f"and edges represent links. Hover over nodes for details."
         )
+
+    @output
+    @render.text
+    def text_legend():
+        """Readable text legend explaining node color, size, and edges."""
+        color_by = input.color_by()
+        size_by = input.size_by()
+        directed = "directed" if input.directed() else "undirected"
+
+        color_label = color_by.replace("_", " ").title()
+        size_label = size_by.replace("_", " ").title()
+
+        arrow = "→" if input.directed() else "—"
+
+        legend_text = (
+            f"Legend:\n"
+            f"• Node color: {color_label}"
+        )
+
+        if color_by == "diffusion_time":
+            legend_text += " (bright orange = source article, darker blue = fewer steps away)"
+
+        legend_text += f"\n• Node size: {size_label}\n• Edge {arrow}: link between pages"
+
+        return legend_text
+
+    @output
+    @render_widget
+    def graph_plot():
+        """
+        Create interactive Plotly graph visualization with:
+        - Zoom and pan capabilities
+        - Color coding by selected metric or community
+        - Node sizing by selected metric
+        - Hover tooltips showing node details
+        """
+        G, metrics, _ = graph_and_metrics()
+        if G.number_of_nodes() == 0:
+            fig = go.Figure()
+            fig.update_layout(title="No nodes to display")
+            return fig
+
+        # Calculate node positions using selected layout algorithm
+        pos = layout_coords(G, input.layout_algo())
+
+        color_by = input.color_by()
+        size_by = input.size_by()
+
+        # Create edge traces (lines connecting nodes)
+        edge_x, edge_y = [], []
+        for a, b in G.edges():
+            xa, ya = pos[a]
+            xb, yb = pos[b]
+            edge_x += [xa, xb, None]
+            edge_y += [ya, yb, None]
+
+        edge_trace = go.Scatter(
+            x=edge_x,
+            y=edge_y,
+            mode="lines",
+            hoverinfo="none",
+            line=dict(width=1),
+            opacity=0.5,
+            name="Links between pages",
+            showlegend=True,
+        )
+
+        # Add position coordinates to metrics dataframe
+        m2 = metrics.copy()
+        m2["x"] = m2["node"].map(lambda n: pos[n][0])
+        m2["y"] = m2["node"].map(lambda n: pos[n][1])
+
+        diff_results = diffusion_results.get()
+        if diff_results and color_by == "diffusion_time":
+            m2["diffusion_time"] = m2["node"].map(lambda n: diff_results.get(n, -1))
+            # Mark source node with special value for distinct coloring
+            m2["is_source"] = m2["diffusion_time"] == 0
+
+        # Apply user-selected color and size mappings
+        svals = m2[size_by]
+        sizes = (
+            [20] * len(svals)
+            if svals.max() == svals.min()
+            else (10 + 30 * (svals - svals.min()) / (svals.max() - svals.min()))
+        )
+
+        # Create hover data
+        hover_cols = ["degree", "degree_centrality", "betweenness", "closeness", "clustering", "community"]
+        if "diffusion_time" in m2.columns:
+            hover_cols.append("diffusion_time")
+
+        # Create node trace with hover information
+        if color_by == "diffusion_time" and "is_source" in m2.columns:
+            # Split into source and non-source nodes for distinct coloring
+            source_nodes = m2[m2["is_source"] == True]
+            other_nodes = m2[m2["is_source"] == False]
+
+            traces = [edge_trace]
+
+            # Non-source nodes (regular diffusion coloring)
+            if len(other_nodes) > 0:
+                other_sizes = [sizes[i] for i in other_nodes.index]
+                node_trace_others = px.scatter(
+                    other_nodes,
+                    x="x",
+                    y="y",
+                    hover_name="node",
+                    hover_data=hover_cols,
+                    color="diffusion_time",
+                    size=other_sizes,
+                ).data[0]
+                node_trace_others.name = "Infected nodes"
+                node_trace_others.showlegend = True
+                if getattr(node_trace_others, "marker", None) and getattr(node_trace_others.marker, "colorbar", None):
+                    node_trace_others.marker.colorbar.title = "Steps from Source"
+                traces.append(node_trace_others)
+
+            # Source node (distinct bright color - orange/red)
+            if len(source_nodes) > 0:
+                source_sizes = [sizes[i] for i in source_nodes.index]
+                node_trace_source = go.Scatter(
+                    x=source_nodes["x"],
+                    y=source_nodes["y"],
+                    mode="markers",
+                    marker=dict(
+                        size=[s * 1.3 for s in source_sizes],  # Make slightly larger
+                        color="rgb(255, 69, 0)",  # Bright orange-red
+                        line=dict(width=2, color="white")  # White border for extra emphasis
+                    ),
+                    text=source_nodes["node"],
+                    hovertemplate="<b>SOURCE: %{text}</b><br>" +
+                                  "<br>".join([f"{col}: %{{customdata[{i}]}}" for i, col in enumerate(hover_cols)]) +
+                                  "<extra></extra>",
+                    customdata=source_nodes[hover_cols].values,
+                    name="Source article",
+                    showlegend=True
+                )
+                traces.append(node_trace_source)
+
+            fig = go.Figure(data=traces)
+        else:
+            # Regular coloring for non-diffusion views
+            node_trace = px.scatter(
+                m2,
+                x="x",
+                y="y",
+                hover_name="node",
+                hover_data=hover_cols,
+                color=color_by if color_by in m2.columns else "community",
+                size=sizes,
+            ).data[0]
+
+            node_trace.name = f"Pages (color: {color_by}, size: {size_by})"
+            node_trace.showlegend = True
+
+            # Optional: give colorbar a nicer title for continuous metrics
+            if getattr(node_trace, "marker", None) and getattr(node_trace.marker, "colorbar", None):
+                node_trace.marker.colorbar.title = color_by.replace("_", " ").title()
+
+            fig = go.Figure(data=[edge_trace, node_trace])
+        fig.update_layout(
+            xaxis=dict(visible=False),
+            yaxis=dict(visible=False),
+            showlegend=True,
+            legend=dict(
+                orientation="h",
+                yanchor="top",
+                y=-0.1,
+                xanchor="center",
+                x=0.5,
+                itemclick=False,
+                itemdoubleclick=False,
+            ),
+            margin=dict(l=10, r=10, t=10, b=60),
+            dragmode="pan",
+        )
+        return fig
+
+
+
+    @output
+    @render.data_frame
+    def metric_table():
+        """
+        Display dynamic table of top 15 nodes ranked by the selected size metric.
+        Updates automatically when user changes the "Node size by" dropdown.
+        """
+        _, metrics, _ = graph_and_metrics()
+        if len(metrics) == 0:
+            return pd.DataFrame()
+        col = input.size_by()
+        return metrics.sort_values(col, ascending=False).head(15).reset_index(drop=True)
+
+    @output
+    @render.text
+    def stats_text():
+        """Display summary statistics about the current graph."""
+        G, metrics, communities_dict_full = graph_and_metrics()
+        if G.number_of_nodes() == 0:
+            return "No graph loaded."
+
+        GU = G.to_undirected()
+        dens = nx.density(GU)  # How connected the graph is (0-1)
+        comps = nx.number_connected_components(GU)  # Number of disconnected groups
+
+        # FIXED: Detect communities on the FILTERED graph (G), not full graph
+        # This ensures all nodes in communities exist in G
+        communities_dict_filtered = detect_communities(G)
+        modularity_q = compute_modularity(G, communities_dict_filtered)
+
+        return (f"Nodes: {G.number_of_nodes()} | Edges: {G.number_of_edges()} | "
+                f"Density: {dens:.4f} | Connected components: {comps} | "
+                f"Modularity Q: {modularity_q:.4f}")
+
 
 
 # Create and run the Shiny app
-#app = App(app_ui, server)
 if __name__ == "__main__":
     import shiny
 
