@@ -236,12 +236,12 @@ app_ui = ui.page_fluid(
         # Main content area with visualization and table
         ui.column(
             9,
+            # First row: Graph and Table side by side
             ui.layout_column_wrap(
                 # Interactive Plotly graph with zoom/pan capabilities
                 ui.card(
                     ui.card_header("Graph View (Plotly)"),
                     output_widget("graph_plot", height="520px"),
-
                     ui.div(
                         {"class": "text-muted small mt-2"},
                         ui.output_text("graph_caption")
@@ -252,19 +252,19 @@ app_ui = ui.page_fluid(
                     ui.card_header("Top Nodes by Metric"),
                     ui.output_data_frame("metric_table")
                 ),
-                
-                # Histogram 
-                 ui.card(
-                    ui.card_header("Degree Distribution Histogram"),
-                    ui.div(
-                        {"class": "text-muted small mb-1"},
-                        "How to use: Shows the degree distribution for all nodes in the current graph. "
-                        "Use the 'Histogram degree type' dropdown on the left to switch "
-                        "between total degree, in-degree, or out-degree."
-                    ),
-                    output_widget("degree_histogram", height="350px"),
             ),
-          )
+
+            # Second row: Histogram spans full width below
+            ui.card(
+                ui.card_header("Degree Distribution Histogram"),
+                ui.div(
+                    {"class": "text-muted small mb-1"},
+                    "How to use: Shows the degree distribution for all nodes in the current graph. "
+                    "Use the 'Histogram degree type' dropdown on the left to switch "
+                    "between total degree, in-degree, or out-degree."
+                ),
+                output_widget("degree_histogram", height="350px"),
+            ),
         )
     ),
             
