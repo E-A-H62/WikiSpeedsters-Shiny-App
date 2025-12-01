@@ -293,19 +293,19 @@ app_ui = ui.page_fluid(
                       ui.card_header("Controls"),
                       ui.input_switch("directed", "Directed graph", value=True),
                       # Filter controls to reduce graph size for performance
-                      ui.input_slider("max_nodes", "Maximum nodes to display", 50, 1000, 200, step=50),
-                      ui.input_select("node_filter", "Show nodes by",
+                      ui.input_slider("max_nodes", "Maximum nodes to display (Graph)", 50, 1000, 200, step=50),
+                      ui.input_select("node_filter", "Show nodes by (Graph)",
                                       {"top_degree": "Top by degree",
                                        "top_betweenness": "Top by betweenness",
                                        "min_degree": "Minimum degree filter"}),
-                      ui.input_slider("min_degree", "Min degree threshold", 0, 50, 5, step=1),
+                      ui.input_slider("min_degree", "Min degree threshold (Graph)", 0, 50, 5, step=1),
                       # Visualization controls
-                      ui.input_select("layout_algo", "Layout",
-                                      ["spring", "kamada-kawai", "circular", "spectral"]),
-                      ui.input_select("color_by", "Color by",
+                      ui.input_select("layout_algo", "Layout (Graph)",
+                                      ["spring"]),
+                      ui.input_select("color_by", "Color by (Graph)",
                                       ["degree", "degree_centrality", "betweenness", "closeness",
                                        "clustering", "diffusion_time"]),
-                      ui.input_select("size_by", "Node size by",
+                      ui.input_select("size_by", "Node size by (Graph)",
                                       ["degree", "degree_centrality", "betweenness", "closeness", "clustering"]),
 
                       ui.input_select("degree_type", "Histogram degree type",
@@ -325,7 +325,7 @@ app_ui = ui.page_fluid(
 
                   # Diffusion Parameters
                   ui.card(
-                      ui.card_header("Diffusion"),
+                      ui.card_header("Diffusion (Graph)"),
                       ui.input_select("seed_node", "Seed node", choices=[]),
                       ui.input_slider("diffusion_steps", "Diffusion steps", 1, 20, 5, step=1),
                       ui.input_switch("random_seed", "Random seed", value=False),
@@ -620,9 +620,9 @@ def server(input: Inputs, output: Outputs, session: Session):
         directed = "directed" if input.directed() else "undirected"
 
         return (
-            "How to read this view: Each node represents a page in the "
-            f"{directed} graph. Color shows {color_by}, size reflects {size_by}, "
-            f"and edges represent links. Hover over nodes for details."
+            f"{directed} graph where edges represent links between articles. "
+            f"Diffusion time shows how many jumps it takes to get from one article to another. "
+            f"Color shows {color_by} and size reflects {size_by}. Hover over nodes for details."
         )
 
     @output
