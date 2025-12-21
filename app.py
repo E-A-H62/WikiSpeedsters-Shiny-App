@@ -901,8 +901,11 @@ def server(input: Inputs, output: Outputs, session: Session):
 # Create and run the Shiny app
 if __name__ == "__main__":
     import shiny
+    import os
 
     # Create and run the Shiny app
     app = App(app_ui, server)
 
-    shiny.run_app(app, port=8000, reload=False)  # reload=False avoids any reload quirks
+    # Use PORT environment variable if available (for Render deployment), otherwise default to 8000
+    port = int(os.environ.get("PORT", 8000))
+    shiny.run_app(app, port=port, host="0.0.0.0", reload=False)  # host="0.0.0.0" allows external connections
